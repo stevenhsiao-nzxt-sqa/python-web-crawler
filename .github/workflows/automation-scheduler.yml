@@ -13,16 +13,7 @@ on:
         description: 'The machine to run the automation on'
         options:
           - all
-          - N7-B550
-          - N7-B550-2
-          - N7-B650E
-          - N7-Z370
-          - N7-Z390
-          - N7-Z490
-          - N7-Z590
-          - N5-Z690
-          - N7-Z690
-          - N7-Z790
+          - Steven-home
       
       testrun:
         description: 'The test run name'
@@ -44,7 +35,7 @@ jobs:
       runner: ${{ (github.event.inputs.machine == 'all' || github.event_name == 'schedule') && steps.set-all-runners.outputs.runner || steps.set-one-runner.outputs.runner }}
     steps:
       - id: set-all-runners
-        run: echo "::set-output name=runner::{\"runner\":[\"N7-B550\", \"N7-B550-2\", \"N7-B650E\", \"N7-Z370\", \"N7-Z390\", \"N7-Z490\", \"N7-Z590\", \"N5-Z690\", \"N7-Z690\", \"N7-Z790\"]}"
+        run: echo "::set-output name=runner::{\"runner\":[\"Steven-home\", \"N7-B550-2\", \"N7-B650E\", \"N7-Z370\", \"N7-Z390\", \"N7-Z490\", \"N7-Z590\", \"N5-Z690\", \"N7-Z690\", \"N7-Z790\"]}"
       - id: set-one-runner
         run: echo "::set-output name=runner::{\"runner\":[\"${{ github.event.inputs.machine }}\"]}"
 
