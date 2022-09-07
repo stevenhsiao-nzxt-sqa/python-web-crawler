@@ -1,0 +1,206 @@
+name: Run e2e test
+
+on:
+  workflow_dispatch:  
+    inputs:
+      branch:
+        description: 'The branch to run the automation on'
+        required: false
+        default: 'main'
+      
+      machine:
+        type: choice
+        description: 'The machine to run the automation on'
+        options:
+          - all
+          - N7-B550
+          - N7-B550-2
+          - N7-B650E
+          - N7-Z370
+          - N7-Z390
+          - N7-Z490
+          - N7-Z590
+          - N5-Z690
+          - N7-Z690
+          - N7-Z790
+      
+      testrun:
+        description: 'The test run name'
+        required: false
+        default: 'No need'
+
+  schedule:
+    - cron: "0 12 * * *"
+
+# If a newer commit triggers an action on a given ref, cancel any previous pending or in-progress action
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  runner-check:
+    runs-on: ubuntu-latest
+    outputs:
+      runner: ${{ (github.event.inputs.machine == 'all' || github.event_name == 'schedule') && steps.set-all-runners.outputs.runner || steps.set-one-runner.outputs.runner }}
+    steps:
+      - id: set-all-runners
+        run: echo "::set-output name=runner::{\"runner\":[\"N7-B550\", \"N7-B550-2\", \"N7-B650E\", \"N7-Z370\", \"N7-Z390\", \"N7-Z490\", \"N7-Z590\", \"N5-Z690\", \"N7-Z690\", \"N7-Z790\"]}"
+      - id: set-one-runner
+        run: echo "::set-output name=runner::{\"runner\":[\"${{ github.event.inputs.machine }}\"]}"
+
+  get-date:
+    runs-on: ubuntu-latest
+    outputs:
+      date: ${{ steps.set-date.outputs.date }}
+    steps:
+      - name: set date output 
+        id: set-date
+        run: echo "::set-output name=date::$(date +'%Y-%m-%d')"
+      
+  run-e2e-test:
+    needs: [runner-check, get-date]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.runner-check.outputs.runner) }}
+    defaults:
+      run:
+        shell: cmd
+        
+    steps:
+      - name: Close NZXT CAM
+        run: TASKKILL /F /IM NZXT*
+        continue-on-error: true
+      
+      - name: Unload core hanged file
+        shell: powershell
+        run: |
+          cd C:/
+          & '.\cmd-admin.lnk' /c "sc stop WinRing0_1_2_0"
+          & '.\cmd-admin.lnk' /c "sc stop N7Z490Fans"
+
+      - name: Clean environment
+        run: |
+          pnpm run rm:camappdata
+          pnpm run rm:nodemodules
+        continue-on-error: true
+
+      - name: Checkout the Cerberus repo 
+        uses: actions/checkout@v2
+        with:
+          repository: "NZXTCorp/cerberus"
+          token: ${{ secrets.PRIVATE_ACTIONS_ACCESS_TOKEN }}
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.branch }}
+          
+      - name: Use Node.js v14
+        uses: actions/setup-node@v1
+        with:
+          always-auth: true
+          node-version: 14.x
+          registry-url: https://registry.npmjs.org
+          scope: "@nzxt"
+
+      - name: Use pnpm@6.32.4 and install dependencies
+        uses: pnpm/action-setup@v2.0.1
+        with:
+          version: 6.32.4
+          run_install: true
+        env:
+          NODE_AUTH_TOKEN: ${{secrets.NPM_READ_TOKEN}}
+          
+      - name: Build cam-app distribution version
+        run: |
+          cd ./packages/cam-app
+          copy .env.example .env
+          pnpm run dist -- -c.publish.bucket
+        env:
+          NODE_AUTH_TOKEN: ${{secrets.NPM_READ_TOKEN}}
+                
+      - name: Install e2e dependencies
+        run: |
+          cd ./packages/e2e-test
+          pnpm install
+
+      - name: Close NZXT CAM
+        run: TASKKILL /F /IM NZXT*
+        continue-on-error: true
+
+      - name: Run e2e test with test run created
+        if: ${{ github.event.inputs.testrun != 'No need' && github.event.inputs.testrun != '' || github.event_name == 'schedule' }}
+        run: |
+          cd ./packages/e2e-test
+          pnpm run test:e2e -- --tags=@%computername%
+        env:
+          TESTRAIL_HOST_NAME: 'https://nzxt.testrail.io/'
+          TESTRAIL_USER_NAME: ${{secrets.TESTRAIL_USER_NAME}}
+          TESTRAIL_API_KEY: ${{secrets.TESTRAIL_API_KEY}}
+          TEST_RUN_NAME: ${{github.event_name == 'schedule' && needs.get-date.outputs.date || github.event.inputs.testrun}}-${{github.event.inputs.branch || github.ref_name}}
+      
+      - name: Run e2e test without test run created
+        if: ${{ github.event.inputs.testrun == 'No need' || github.event.inputs.testrun == '' }}
+        run: |
+          cd ./packages/e2e-test
+          pnpm run test:e2e -- --tags=@%computername%
+
+      - name: Kill NZXT CAM Processes
+        if: always()
+        run: TASKKILL /F /IM NZXT*
+        continue-on-error: true
+
+      - name: 'Upload Artifact'
+        if: always()
+        uses: actions/upload-artifact@v2
+        with:
+          name: screenshots
+          path: ./packages/e2e-test/screenshots/*.png
+          retention-days: 3
+
+  send-slack-report:
+    if: ${{ github.event.inputs.testrun != 'No need' && github.event.inputs.testrun != '' || github.event_name == 'schedule' }}
+    needs: [run-e2e-test, get-date]
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: cmd
+
+    steps:
+      - name: Checkout the Cerberus repo 
+        uses: actions/checkout@v2
+        with:
+          repository: "NZXTCorp/cerberus"
+          token: ${{ secrets.PRIVATE_ACTIONS_ACCESS_TOKEN }}
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.branch }}
+          
+      - name: Use Node.js v12
+        uses: actions/setup-node@v1
+        with:
+          always-auth: true
+          node-version: 14.x
+          registry-url: https://registry.npmjs.org
+          scope: "@nzxt"
+
+      - name: Use pnpm@6.32.4 and install dependencies
+        uses: pnpm/action-setup@v2.0.1
+        with:
+          version: 6.32.4
+          run_install: true
+        env:
+          NODE_AUTH_TOKEN: ${{secrets.NPM_READ_TOKEN}}
+      
+      - name: Send report
+        run: |
+          cd ./packages/e2e-test
+          pnpm run send:slack
+        env:
+          TESTRAIL_HOST_NAME: 'https://nzxt.testrail.io/'
+          TESTRAIL_USER_NAME: ${{secrets.TESTRAIL_USER_NAME}}
+          TESTRAIL_API_KEY: ${{secrets.TESTRAIL_API_KEY}}
+          TEST_RUN_NAME: ${{github.event_name == 'schedule' && needs.get-date.outputs.date || github.event.inputs.testrun}}-${{github.event.inputs.branch || github.ref_name}}
+          SLACK_BOT_KEY: ${{secrets.SLACK_BOT_KEY}}
+          GHA_URL: ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}}
+          BUILD: ${{github.event.inputs.branch || github.ref_name}}
+          
