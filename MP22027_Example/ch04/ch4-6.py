@@ -2,7 +2,7 @@ import requests
 import json, csv
  
 csvfile = "tw_sgx.csv"
-url = "https://api.sgx.com/derivatives/v1.0/contract-code/TW?order=asc&orderby=delivery-month&category=futures&session=-1&t=1596956628001&showTAICTrades=false"
+url = "https://api.sgx.com/derivatives/v1.0/contract-code/CN?order=asc&orderby=delivery-month&category=futures&session=-1&t=1669876044693"
 r = requests.get(url)
 json_data = json.loads(r.text)
 output = []
